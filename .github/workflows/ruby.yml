@@ -1,0 +1,77 @@
+
+
+name: Ruby
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      db:
+        image: mysql:5.7
+        env:
+          MYSQL_ROOT_PASSWORD: root
+        ports:
+          - 3306
+        options: >-
+          --health-cmd="mysqladmin ping" 
+          --health-interval=10s 
+          --health-timeout=5s 
+          --health-retries=3
+      
+      redis:
+        image: redis
+        ports: ['6379:6379']
+        options: --entrypoint redis-server
+
+      elasticsearch:
+        image: elasticsearch:7.7.1
+        ports: ['9200:9200']
+        options: >-
+          -e="discovery.type=single-node" 
+          --health-cmd="curl http://localhost:9200/_cluster/health" 
+          --health-interval=10s 
+          --health-timeout=5s 
+          --health-retries=10
+    steps:   
+      - name: Set up Ruby
+        uses: actions/setup-ruby@v1
+        with:
+          ruby-version: 2.6.x
+
+      - name: Checkout Code
+        uses: actions/checkout@v1
+        with:
+          fetch-depth: 1
+
+      - name: Verify MySQL connection from host
+        run: |
+          sudo apt-get install -y mysql-client libmysqlclient-dev
+          mysql --host 127.0.0.1 --port ${{ job.services.mysql.ports[3306] }} -uroot -p1234 -e "SHOW GRANTS FOR 'root'@'localhost'"
+          mysql_tzinfo_to_sql /usr/share/zoneinfo | mysql --host 127.0.0.1 --port ${{ job.services.mysql.ports[3306] }} -uroot -p1234 mysql
+      
+      - name: Verify Elasticsearch connection from host
+        env:
+          ELASTIC_SEARCH_URL: http://localhost:${{ job.services.elasticsearch.ports[9200] }}
+        run: |
+          echo $ELASTIC_SEARCH_URL
+          curl -fsSL "$ELASTIC_SEARCH_URL/_cat/health?h=status"            
+      
+      - name: Bundle Install and Create DB
+        env:
+          RAILS_ENV: test
+          DB_PASSWORD: root
+          # tell Rails to use proper port for MySQL
+          DB_PORT: ${{ job.services.mysql.ports[3306] }}
+        run: |
+          gem install bundler --version 1.17.3
+          bundle install --jobs 4 --retry 3
+          bin/rails db:prepare --trace
+          
+      - name: Run tests
+        env:
+          DB_PASSWORD: root
+          DB_PORT: ${{ job.services.mysql.ports[3306] }} # get randomly assigned published port
+          REDIS_PORT: ${{ job.services.redis.ports[6379] }}
+          ELASTIC_SEARCH_URL: http://localhost:${{ job.services.elasticsearch.ports[9200] }}
+          RAILS_ENV: test
+        run: bundle exec rspec
